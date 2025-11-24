@@ -1,0 +1,1057 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UK Landscape Explorer - GCSE Geography</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for the PWA theme */
+        :root {
+            --color-primary: #1e3a8a; /* Dark Blue */
+            --color-secondary: #059669; /* Emerald Green */
+            --color-background: #f0fdf4; /* Pale Green/White */
+            --color-card-bg: #d1fae5; /* Light Mint */
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--color-background);
+        }
+        .game-card {
+            background-color: white;
+            border: 2px solid var(--color-secondary);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+        .btn-primary {
+            background-color: var(--color-primary);
+            transition: transform 0.1s;
+        }
+        .btn-primary:hover {
+            background-color: #1e40af;
+            transform: translateY(-1px);
+        }
+        .btn-secondary {
+            background-color: var(--color-secondary);
+            transition: transform 0.1s;
+        }
+        .btn-secondary:hover {
+            background-color: #047857;
+            transform: translateY(-1px);
+        }
+        .badge-unlocked {
+            filter: drop-shadow(0 0 5px var(--color-secondary));
+        }
+        .badge-locked {
+            filter: grayscale(100%) opacity(50%);
+        }
+        .option-item:hover {
+            transform: scale(1.02);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        .view-fade-in {
+            animation: fadeIn 0.5s ease-in-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        #short-answer-input {
+            border: 2px solid #ccc;
+            padding: 10px;
+            border-radius: 8px;
+            transition: border-color 0.3s;
+        }
+        #short-answer-input:focus {
+            outline: none;
+            border-color: var(--color-primary);
+        }
+    </style>
+    <!-- PWA Basic Manifest (optional but recommended) -->
+    <link rel="manifest" href="manifest.webmanifest">
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+    <!-- Loading/Initialization Screen -->
+    <div id="loading-screen" class="fixed inset-0 bg-white flex flex-col items-center justify-center z-50">
+        <svg class="animate-spin h-10 w-10 text-emerald-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <p class="mt-4 text-gray-700">Loading Explorer Data...</p>
+    </div>
+
+    <!-- Main Game Container -->
+    <div id="app-container" class="w-full max-w-2xl p-6 rounded-xl game-card view-fade-in hidden">
+        <header class="text-center mb-6">
+            <h1 class="text-3xl font-extrabold text-gray-800">UK Landscape Explorer</h1>
+            <p class="text-sm text-gray-500">GCSE Geography A Revision Tool</p>
+            <div id="user-info" class="mt-2 text-xs text-gray-600"></div>
+        </header>
+
+        <!-- Main Content Area -->
+        <div id="game-view">
+            <!-- Content will be injected here (Home, Quiz, Results) -->
+        </div>
+    </div>
+
+    <!-- Firebase SDK Imports + Game Logic -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firestore debugging
+        setLogLevel('error');
+
+        // --- GLOBAL VARIABLES (Canvas Environment Variables) ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db = null;
+        let auth = null;
+        let userId = null;
+        let authReady = false;
+        let gameData = null;
+        let unsubscribe = null;
+
+        // Session state
+        let currentQuestion = null;
+        let currentActivity = null; // topic or "mixed"
+        let hasAnsweredCurrent = false;
+
+        let session = {
+            questions: [],
+            currentIndex: 0,
+            correctThisSession: 0,
+            totalThisSession: 0,
+            streak: 0,
+            maxStreak: 0,
+            mode: 'topic' // 'topic' or 'mixed'
+        };
+
+        // --- GAME DATA STRUCTURE ---
+        const initialGameData = {
+            score: 0,
+            totalAnswered: 0,
+            highScore: 0,
+            sessionsCompleted: 0,
+            badges: {
+                general:       { earned: false, questions: 0, required: 5 },
+                coastal_proc:  { earned: false, questions: 0, required: 5 },
+                coastal_land:  { earned: false, questions: 0, required: 5 },
+                coastal_mgmt:  { earned: false, questions: 0, required: 5 },
+                river_proc:    { earned: false, questions: 0, required: 5 },
+                river_land:    { earned: false, questions: 0, required: 5 },
+            },
+            answeredQuestions: [] // IDs answered correctly at least once
+        };
+
+        const allQuestions = [
+            // --- 1. General UK Landscapes (Key Ideas 1.1 & 1.2) ---
+            { id: 'Q001', topic: 'general', type: 'mcq', difficulty: 'easy',
+              q: 'Which of these is a characteristic of most sedimentary rocks?',
+              options: ['Formed by magma cooling', 'Metamorphosed by heat and pressure', 'Formed from layers of deposited material', 'Very hard and resistant to erosion'],
+              answer: 'Formed from layers of deposited material',
+              explanation: 'Sedimentary rocks form from layers of sediment compacted and cemented over time, often in seas and lakes.' },
+            { id: 'Q002', topic: 'general', type: 'mcq', difficulty: 'easy',
+              q: 'Basalt and granite are examples of which main UK rock type?',
+              options: ['Sedimentary', 'Metamorphic', 'Igneous', 'Carboniferous'],
+              answer: 'Igneous',
+              explanation: 'Igneous rocks form when molten magma cools and solidifies, either below ground (intrusive) or after eruptions (extrusive).' },
+            { id: 'Q003', topic: 'general', type: 'mcq', difficulty: 'easy',
+              q: 'The relatively flat landscapes of the South and East are often formed on softer lowland rock, which is primarily:',
+              options: ['Igneous', 'Metamorphic', 'Sedimentary', 'Volcanic'],
+              answer: 'Sedimentary',
+              explanation: 'Lowland areas like the South and East of England are often underlain by softer sedimentary rocks such as clay and chalk.' },
+            { id: 'Q004', topic: 'general', type: 'tf', difficulty: 'easy',
+              q: 'Upland areas of the UK are predominantly formed from hard, resistant rock types like igneous and metamorphic rocks.',
+              answer: 'True',
+              explanation: 'Uplands such as Scotland and North Wales are often underlain by old, hard igneous and metamorphic rocks.' },
+            { id: 'Q005', topic: 'general', type: 'short', difficulty: 'medium',
+              q: 'Give one example of how agriculture has altered the physical landscape of a lowland area.',
+              keywords: ['hedgerows', 'drainage', 'field systems', 'cultivation', 'ploughing'],
+              explanation: 'Examples include removing hedgerows, draining wetlands, or creating large, regular-shaped fields.' },
+            { id: 'Q006', topic: 'general', type: 'mcq', difficulty: 'medium',
+              q: 'Which physical process is primarily responsible for the U-shaped valleys found in many UK uplands?',
+              options: ['Fluvial erosion', 'Glacial erosion', 'Chemical weathering', 'Mass movement'],
+              answer: 'Glacial erosion',
+              explanation: 'During the last Ice Age, glaciers carved out U-shaped valleys through processes like plucking and abrasion.' },
+            { id: 'Q007', topic: 'general', type: 'tf', difficulty: 'easy',
+              q: 'Forestry (tree planting) is an example of a human process that shapes the UK landscape.',
+              answer: 'True',
+              explanation: 'Planting conifer plantations or clearing woodland changes natural vegetation cover and the appearance of the landscape.' },
+            { id: 'Q008', topic: 'general', type: 'mcq', difficulty: 'easy',
+              q: 'What type of rock is chalk?',
+              options: ['Igneous', 'Sedimentary', 'Metamorphic', 'Basalt'],
+              answer: 'Sedimentary',
+              explanation: 'Chalk is a soft, white, porous sedimentary rock formed from microscopic sea organisms.' },
+            { id: 'Q009', topic: 'general', type: 'mcq', difficulty: 'medium',
+              q: 'The term schists refers to which rock type, usually associated with upland regions?',
+              options: ['Sedimentary', 'Metamorphic', 'Igneous', 'Sandstone'],
+              answer: 'Metamorphic',
+              explanation: 'Schists are metamorphic rocks altered by heat and pressure, often forming in mountainous upland areas.' },
+            { id: 'Q010', topic: 'general', type: 'short', difficulty: 'hard',
+              q: 'Name one past tectonic process that contributed to the rock structure of the UK.',
+              keywords: ['continental drift', 'volcanism', 'plate collision', 'folding'],
+              explanation: 'Past tectonic activity like plate collisions, mountain building, and volcanism created many of the UK’s rock structures.' },
+
+            // --- 2. Coastal Landscapes and Processes (Key Ideas 1.3 - 1.6) ---
+            { id: 'Q011', topic: 'coastal_proc', type: 'mcq', difficulty: 'easy',
+              q: 'Waves compressing air into cracks in the rock, causing the crack to widen, is known as:',
+              options: ['Abrasion', 'Attrition', 'Hydraulic Action', 'Solution'],
+              answer: 'Hydraulic Action',
+              explanation: 'Hydraulic action occurs when waves force air and water into cracks, increasing pressure and breaking rock apart.' },
+            { id: 'Q012', topic: 'coastal_proc', type: 'mcq', difficulty: 'easy',
+              q: 'The process where rock fragments carried by the sea knock against each other, becoming smaller and more rounded, is:',
+              options: ['Abrasion', 'Attrition', 'Hydraulic Action', 'Solution'],
+              answer: 'Attrition',
+              explanation: 'Attrition is the wearing down of rock particles as they collide with each other in the water.' },
+            { id: 'Q013', topic: 'coastal_proc', type: 'mcq', difficulty: 'medium',
+              q: 'Which transport process involves sediment being carried along in the water column?',
+              options: ['Traction', 'Saltation', 'Suspension', 'Solution'],
+              answer: 'Suspension',
+              explanation: 'Suspension transports fine material like silt and clay, which is carried within the water.' },
+            { id: 'Q014', topic: 'coastal_proc', type: 'tf', difficulty: 'easy',
+              q: 'Destructive waves typically have a strong backwash and a weak swash, leading to deposition.',
+              answer: 'False',
+              explanation: 'Destructive waves have a strong backwash that erodes the beach rather than building it up.' },
+            { id: 'Q015', topic: 'coastal_proc', type: 'mcq', difficulty: 'medium',
+              q: 'The most rapid form of mass movement involving a sudden, fast movement of a block of land down a slope is:',
+              options: ['Soil creep', 'Rotational slump', 'Rockfall', 'Sliding'],
+              answer: 'Sliding',
+              explanation: 'Sliding is a rapid mass movement where material moves quickly along a slip plane.' },
+            { id: 'Q016', topic: 'coastal_land', type: 'mcq', difficulty: 'easy',
+              q: 'The formation of headlands and bays is typical of which coastal geological structure?',
+              options: ['Concordant', 'Discordant', 'Horizontal', 'Vertical'],
+              answer: 'Discordant',
+              explanation: 'On discordant coasts, bands of hard and soft rock at right angles to the coast create headlands and bays.' },
+            { id: 'Q017', topic: 'coastal_land', type: 'seq', difficulty: 'medium',
+              q: 'Order the formation of these erosional landforms:',
+              sequence: ['Cave', 'Arch', 'Stack', 'Stump'],
+              answer: ['Cave', 'Arch', 'Stack', 'Stump'],
+              explanation: 'Erosion enlarges a crack to a cave, breaks through to an arch, leaves a stack when the arch collapses, and finally a stump as the stack erodes.' },
+            { id: 'Q018', topic: 'coastal_land', type: 'mcq', difficulty: 'medium',
+              q: 'A long, narrow ridge of sand or shingle attached to the land at one end, extending out to sea across a river mouth, is called a:',
+              options: ['Bar', 'Tombolo', 'Spit', 'Bay'],
+              answer: 'Spit',
+              explanation: 'A spit forms by longshore drift depositing sediment where the coastline changes direction or across an estuary.' },
+            { id: 'Q019', topic: 'coastal_land', type: 'short', difficulty: 'medium',
+              q: 'What landform is created when a spit grows across a bay, connecting two headlands?',
+              keywords: ['bar', 'barrier beach'],
+              explanation: 'When a spit completely closes a bay, it forms a bar (or barrier beach), trapping water behind it.' },
+            { id: 'Q020', topic: 'coastal_land', type: 'mcq', difficulty: 'easy',
+              q: 'What feature is created at the base of a cliff by marine erosion, causing the cliff to collapse and retreat?',
+              options: ['Cliff face', 'Wave-cut platform', 'Wave-cut notch', 'Arch'],
+              answer: 'Wave-cut notch',
+              explanation: 'A wave-cut notch forms at the base of the cliff; when it enlarges, the cliff becomes unstable and collapses.' },
+            { id: 'Q021', topic: 'coastal_proc', type: 'mcq', difficulty: 'medium',
+              q: 'Rainwater dissolving rock minerals is an example of:',
+              options: ['Mechanical weathering', 'Chemical weathering', 'Biological weathering', 'Mass movement'],
+              answer: 'Chemical weathering',
+              explanation: 'Acidic rainwater reacts with rock minerals in chemical weathering, especially on limestone and chalk.' },
+            { id: 'Q022', topic: 'coastal_land', type: 'tf', difficulty: 'easy',
+              q: 'A concordant coastline is characterised by bands of hard and soft rock parallel to the coast.',
+              answer: 'True',
+              explanation: 'On concordant coasts, rock bands run parallel to the coastline, often creating coves when weaknesses are breached.' },
+            { id: 'Q023', topic: 'coastal_proc', type: 'mcq', difficulty: 'medium',
+              q: 'Waves that approach the shore at an angle and retreat straight back down the beach cause the net movement of material in one direction. This is:',
+              options: ['Tidal drift', 'Swash and backwash', 'Longshore drift', 'Fluvial deposition'],
+              answer: 'Longshore drift',
+              explanation: 'Longshore drift transports sediment along the coast due to angled swash and gravity-driven backwash.' },
+            { id: 'Q024', topic: 'coastal_land', type: 'short', difficulty: 'easy',
+              q: 'What is the correct sequence of features left after a stack collapses?',
+              keywords: ['stump', 'stumps'],
+              explanation: 'After a stack is eroded and collapses, a lower, often submerged feature called a stump remains.' },
+
+            // Management and Case Study Questions (Holderness)
+            { id: 'Q051', topic: 'coastal_mgmt', type: 'mcq', difficulty: 'medium',
+              q: 'What is the approximate average rate of erosion on parts of the Holderness Coast (e.g., between Mappleton and Hornsea)?',
+              options: ['Less than 0.5 metres per year', '1.8 metres per year', '5 metres per year', '10 metres per year'],
+              answer: '1.8 metres per year',
+              explanation: 'Some stretches of the Holderness Coast erode at an average of around 1.8 m per year, one of the fastest rates in Europe.' },
+            { id: 'Q052', topic: 'coastal_mgmt', type: 'short', difficulty: 'medium',
+              q: 'Name the soft, unconsolidated rock type that is primarily responsible for the rapid erosion rate of the Holderness Coast cliffs.',
+              keywords: ['boulder clay', 'till'],
+              explanation: 'Holderness cliffs are mainly made of glacial boulder clay (till), which is soft and easily eroded.' },
+            { id: 'Q053', topic: 'coastal_mgmt', type: 'mcq', difficulty: 'easy',
+              q: 'Which town on the Holderness Coast is protected by hard engineering (sea wall, groynes) but still faces erosion issues down-drift?',
+              options: ['Erosion', 'Mappleton', 'Hornsea', 'Spurn Head'],
+              answer: 'Hornsea',
+              explanation: 'Hornsea is protected, but this interrupts sediment flow, increasing erosion further south.' },
+            { id: 'Q054', topic: 'coastal_mgmt', type: 'tf', difficulty: 'medium',
+              q: 'Hard engineering at Hornsea has helped stop coastal erosion but has increased the risk of cliff collapse at nearby unprotected areas.',
+              answer: 'True',
+              explanation: 'Defences at Hornsea trap sediment, starving beaches further south, which increases erosion and cliff retreat there.' },
+            { id: 'Q055', topic: 'coastal_mgmt', type: 'short', difficulty: 'medium',
+              q: 'Give one negative human consequence of the rapid coastal recession on the Holderness Coast.',
+              keywords: ['loss of homes', 'infrastructure damage', 'cost of insurance', 'relocation', 'closure of roads', 'farmland loss'],
+              explanation: 'Consequences include properties being lost to the sea, road closures, expensive insurance and stress for residents.' },
+            { id: 'Q056', topic: 'coastal_mgmt', type: 'mcq', difficulty: 'medium',
+              q: 'The sediment transported south from the Holderness Coast is important for maintaining which key depositional landform at the end of the coast?',
+              options: ['Humber Estuary', 'Flamborough Head', 'Spurn Head', 'Mappleton Beach'],
+              answer: 'Spurn Head',
+              explanation: 'Spurn Head spit depends on a continued supply of sediment eroded from Holderness cliffs.' },
+            { id: 'Q057', topic: 'coastal_mgmt', type: 'mcq', difficulty: 'medium',
+              q: 'What is the primary method of coastal management used at the village of Mappleton to protect its road and community?',
+              options: ['Managed retreat', 'Beach nourishment', 'Groynes and Rock Armour', 'Dune stabilisation'],
+              answer: 'Groynes and Rock Armour',
+              explanation: 'At Mappleton, two rock groynes and rock armour were built to protect the B1242 and the village.' },
+            { id: 'Q058', topic: 'coastal_mgmt', type: 'tf', difficulty: 'easy',
+              q: 'The policy of no active intervention is common along low-value agricultural land sections of the Holderness Coast.',
+              answer: 'True',
+              explanation: 'Managing the whole coast would be too expensive, so some low-value stretches are left with “no active intervention”.' },
+            { id: 'Q059', topic: 'coastal_mgmt', type: 'short', difficulty: 'medium',
+              q: 'The groynes at Hornsea reduce the sediment supply to areas further south, leading to what phenomenon there?',
+              keywords: ['sediment starvation', 'increased erosion', 'narrowing beach'],
+              explanation: 'Trapping sediment at Hornsea causes sediment starvation further south, leading to narrower beaches and more erosion.' },
+            { id: 'Q060', topic: 'coastal_mgmt', type: 'mcq', difficulty: 'medium',
+              q: 'Which term describes a strategy where sea defences are allowed to fail and the coast moves inland, usually on low-value land?',
+              options: ['Coastal realignment', 'Advance the line', 'Hold the line', 'No active intervention'],
+              answer: 'Coastal realignment',
+              explanation: 'Coastal realignment (managed retreat) allows the sea to flood low-value land, creating a new natural coastline.' },
+
+            // --- 3. River Landscapes and Processes (Key Ideas 1.7 - 1.10) ---
+            { id: 'Q031', topic: 'river_proc', type: 'mcq', difficulty: 'easy',
+              q: 'Which type of river erosion involves the river bed and banks being worn down by the sediment carried by the river?',
+              options: ['Solution', 'Abrasion', 'Hydraulic action', 'Attrition'],
+              answer: 'Abrasion',
+              explanation: 'Abrasion occurs when the load carried by the river grinds against the bed and banks, wearing them away.' },
+            { id: 'Q032', topic: 'river_proc', type: 'mcq', difficulty: 'easy',
+              q: 'The transport method that moves the largest, heaviest sediment by rolling them along the river bed is:',
+              options: ['Traction', 'Saltation', 'Suspension', 'Solution'],
+              answer: 'Traction',
+              explanation: 'Traction moves large boulders by rolling them along the river bed in times of high energy.' },
+            { id: 'Q033', topic: 'river_proc', type: 'tf', difficulty: 'easy',
+              q: 'In the upper course of a river, the velocity and discharge are generally at their highest.',
+              answer: 'False',
+              explanation: 'Velocity and discharge usually increase downstream as more tributaries join and the channel becomes wider and deeper.' },
+            { id: 'Q034', topic: 'river_proc', type: 'mcq', difficulty: 'easy',
+              q: 'As you move from the upper course to the lower course, the river channel’s width and depth generally:',
+              options: ['Decrease', 'Stay the same', 'Increase', 'Vary randomly'],
+              answer: 'Increase',
+              explanation: 'Downstream, channels typically become wider and deeper with a larger cross-sectional area.' },
+            { id: 'Q035', topic: 'river_land', type: 'mcq', difficulty: 'easy',
+              q: 'The main type of erosion in the upper course of a river, leading to V-shaped valleys, is:',
+              options: ['Lateral erosion', 'Vertical erosion', 'Chemical erosion', 'Mass movement'],
+              answer: 'Vertical erosion',
+              explanation: 'Vertical erosion downcuts into the landscape, deepening the valley and creating steep-sided V-shaped valleys.' },
+            { id: 'Q036', topic: 'river_land', type: 'seq', difficulty: 'medium',
+              q: 'Order the formation of a gorge below a waterfall:',
+              sequence: ['Soft rock undercuts', 'Hard rock overhang collapses', 'Waterfall retreats upstream', 'Gorge is formed'],
+              answer: ['Soft rock undercuts', 'Hard rock overhang collapses', 'Waterfall retreats upstream', 'Gorge is formed'],
+              explanation: 'The waterfall erodes softer rock first, causing undercutting, collapse of the hard cap rock and upstream retreat, leaving a gorge.' },
+            { id: 'Q037', topic: 'river_land', type: 'mcq', difficulty: 'medium',
+              q: 'Meanders (bends) are formed by erosion on the outside bend and deposition on the inside. The feature created by deposition is called a:',
+              options: ['River cliff', 'Oxbow lake', 'Point bar', 'Levee'],
+              answer: 'Point bar',
+              explanation: 'On the inside bend, slower flow leads to deposition forming a slip-off slope or point bar.' },
+            { id: 'Q038', topic: 'river_land', type: 'short', difficulty: 'medium',
+              q: 'What is the name for the natural raised banks found alongside a river channel in its lower course, formed by frequent flooding?',
+              keywords: ['levees', 'levee'],
+              explanation: 'Levees build up when heavier material is deposited close to the river banks during floods.' },
+            { id: 'Q039', topic: 'river_land', type: 'tf', difficulty: 'easy',
+              q: 'An oxbow lake forms when the neck of a meander is cut off by the river during a flood event.',
+              answer: 'True',
+              explanation: 'High flows can cut through the narrow neck of a meander, separating it from the main channel and leaving an oxbow lake.' },
+            { id: 'Q040', topic: 'river_land', type: 'mcq', difficulty: 'easy',
+              q: 'In the lower course of a river, the valley profile is typically a wide and flat area called a:',
+              options: ['Gorge', 'Floodplain', 'Levee', 'Waterfall'],
+              answer: 'Floodplain',
+              explanation: 'Floodplains are wide, flat areas next to the river, made of alluvium deposited by floods.' },
+            { id: 'Q041', topic: 'river_proc', type: 'mcq', difficulty: 'medium',
+              q: 'The bouncing of medium-sized sediment along the river bed is known as:',
+              options: ['Traction', 'Saltation', 'Suspension', 'Solution'],
+              answer: 'Saltation',
+              explanation: 'In saltation, pebbles are picked up and dropped again in a “hopping” motion along the bed.' },
+            { id: 'Q042', topic: 'river_proc', type: 'mcq', difficulty: 'medium',
+              q: 'In the mid to lower course, the main type of erosion is lateral erosion. What does this mean?',
+              options: ['Erosion downwards', 'Erosion sideways', 'Erosion upstream', 'Erosion by wind'],
+              answer: 'Erosion sideways',
+              explanation: 'Lateral erosion wears away the banks of the river, widening the channel and shaping meanders.' },
+            { id: 'Q043', topic: 'river_land', type: 'short', difficulty: 'medium',
+              q: 'What V-shaped features does a river typically wind around in its upper course?',
+              keywords: ['interlocking spurs', 'interlocking spur'],
+              explanation: 'In the upper course, the river weaves around hard rock outcrops, forming interlocking spurs.' },
+
+            // Flooding & management (still available, used in Mixed Mode)
+            { id: 'Q044', topic: 'river_flood', type: 'mcq', difficulty: 'medium',
+              q: 'How does urbanisation increase the risk of river flooding?',
+              options: ['By increasing infiltration into the ground', 'By creating permeable surfaces', 'By increasing surface runoff from impermeable surfaces', 'By slowing down the river flow'],
+              answer: 'By increasing surface runoff from impermeable surfaces',
+              explanation: 'Urban areas have impermeable surfaces like tarmac and concrete, increasing surface runoff and flood risk.' },
+            { id: 'Q045', topic: 'river_flood', type: 'mcq', difficulty: 'medium',
+              q: 'Which is a hard engineering river defence method?',
+              options: ['Washlands', 'Afforestation', 'Floodplain Zoning', 'Dams and Reservoirs'],
+              answer: 'Dams and Reservoirs',
+              explanation: 'Dams and reservoirs are hard engineering structures that store water and control discharge.' },
+            { id: 'Q046', topic: 'river_flood', type: 'short', difficulty: 'medium',
+              q: 'Give one physical effect (on the environment) of river flooding.',
+              keywords: ['erosion of banks', 'deposition of silt', 'habitat destruction'],
+              explanation: 'Flooding can erode river banks, deposit fertile alluvium, or destroy habitats along the river.' },
+            { id: 'Q047', topic: 'river_flood', type: 'tf', difficulty: 'medium',
+              q: 'Channelisation (making the river deeper/wider) is a hard engineering defence that can increase flood risk downstream.',
+              answer: 'True',
+              explanation: 'Faster flowing water in a straightened channel can increase flood risk further downstream.' },
+            { id: 'Q048', topic: 'river_flood', type: 'mcq', difficulty: 'medium',
+              q: 'The soft engineering method of controlling development on areas prone to flooding is known as:',
+              options: ['Flood barriers', 'Floodplain zoning', 'Channelisation', 'Flood walls'],
+              answer: 'Floodplain zoning',
+              explanation: 'Floodplain zoning restricts building on high-risk flood areas, reducing potential damage.' },
+            { id: 'Q049', topic: 'river_flood', type: 'short', difficulty: 'medium',
+              q: 'Give one human cause of river flooding (other than urbanisation).',
+              keywords: ['deforestation', 'agriculture', 'drainage'],
+              explanation: 'Deforestation, poor farming practices or drainage systems can all increase runoff and flood risk.' },
+            { id: 'Q050', topic: 'river_flood', type: 'mcq', difficulty: 'medium',
+              q: 'Which defence allows designated areas (e.g., farmland) to flood naturally to protect urban areas, often creating a wildlife habitat?',
+              options: ['Dams', 'Washlands', 'Levees', 'Channelisation'],
+              answer: 'Washlands',
+              explanation: 'Washlands are areas allowed to flood, reducing pressure on more valuable land downstream.' },
+        ];
+
+        // --- FIREBASE INITIALIZATION AND AUTHENTICATION ---
+        async function initializeFirebase() {
+            try {
+                if (!firebaseConfig) {
+                    console.warn("Firebase config missing. Running in local-only mode.");
+                    if (!gameData) gameData = structuredClone(initialGameData);
+                    initGame();
+                    return;
+                }
+
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                await authenticateUser();
+
+                if (userId) {
+                    subscribeToUserData();
+                }
+            } catch (error) {
+                console.error("Firebase initialization/authentication failed:", error);
+                if (!gameData) gameData = structuredClone(initialGameData);
+                initGame();
+            }
+        }
+
+        async function authenticateUser() {
+            if (!auth) return;
+
+            if (initialAuthToken) {
+                await signInWithCustomToken(auth, initialAuthToken);
+            } else {
+                await signInAnonymously(auth);
+            }
+
+            userId = auth.currentUser?.uid || 'guest-' + crypto.randomUUID();
+            authReady = true;
+
+            const infoEl = document.getElementById('user-info');
+            if (infoEl) {
+                infoEl.textContent = `User ID: ${userId} (Progress is saved when online)`;
+            }
+
+            console.log("Authentication successful. User ID:", userId);
+        }
+
+        function subscribeToUserData() {
+            const userDocRef = doc(db, `artifacts/${appId}/users/${userId}/geography_progress`, 'progress');
+
+            if (unsubscribe) unsubscribe();
+
+            unsubscribe = onSnapshot(userDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const cloudData = docSnap.data();
+                    gameData = {
+                        ...structuredClone(initialGameData),
+                        ...cloudData,
+                        badges: { ...structuredClone(initialGameData.badges), ...(cloudData.badges || {}) }
+                    };
+                    console.log("Loaded game data from Firestore:", gameData);
+                } else {
+                    gameData = structuredClone(initialGameData);
+                    saveGameData();
+                    console.log("Initial game data created.");
+                }
+
+                initGame();
+            }, (error) => {
+                console.error("Error listening to Firestore snapshot:", error);
+                if (!gameData) gameData = structuredClone(initialGameData);
+                initGame();
+            });
+        }
+
+        async function saveGameData() {
+            if (!authReady || !db || !userId) return;
+            const userDocRef = doc(db, `artifacts/${appId}/users/${userId}/geography_progress`, 'progress');
+            try {
+                await setDoc(userDocRef, gameData);
+            } catch (error) {
+                console.error("Error saving game data to Firestore:", error);
+            }
+        }
+
+        // --- GAME CORE LOGIC ---
+
+        function initGame() {
+            const loading = document.getElementById('loading-screen');
+            const app = document.getElementById('app-container');
+            if (loading) loading.classList.add('hidden');
+            if (app) app.classList.remove('hidden');
+
+            if (!gameData) gameData = structuredClone(initialGameData);
+            renderHomeView();
+        }
+
+        // Utility clone for initialGameData
+        function structuredClone(obj) {
+            return JSON.parse(JSON.stringify(obj));
+        }
+
+        function getRank(score) {
+            if (score < 100) return 'Trainee Geographer';
+            if (score < 250) return 'Junior Explorer';
+            if (score < 500) return 'Senior Fieldworker';
+            if (score < 1000) return 'Master Cartographer';
+            return 'Landscape Legend';
+        }
+
+        // --- SESSION HELPERS ---
+
+        function startTopicSession(topic) {
+            currentActivity = topic;
+            session.mode = 'topic';
+
+            const pool = allQuestions.filter(q => q.topic === topic);
+            if (pool.length === 0) {
+                const view = document.getElementById('game-view');
+                view.innerHTML = `
+                    <div class="p-6 bg-red-50 border-l-4 border-red-500 rounded-lg view-fade-in">
+                        <h2 class="text-xl font-bold text-red-800 mb-2">No questions found</h2>
+                        <p class="text-gray-700 text-sm">There are currently no questions tagged for this topic.</p>
+                        <button onclick="renderHomeView()" class="mt-4 bg-gray-300 hover:bg-gray-400 px-4 py-2 rounded-lg text-gray-800 font-bold">
+                            Back to Dashboard
+                        </button>
+                    </div>
+                `;
+                return;
+            }
+
+            const shuffled = [...pool].sort(() => Math.random() - 0.5);
+            const QUESTIONS_PER_SESSION = Math.min(10, shuffled.length);
+
+            session = {
+                questions: shuffled.slice(0, QUESTIONS_PER_SESSION),
+                currentIndex: 0,
+                correctThisSession: 0,
+                totalThisSession: QUESTIONS_PER_SESSION,
+                streak: 0,
+                maxStreak: 0,
+                mode: 'topic'
+            };
+
+            currentQuestion = session.questions[0];
+            renderQuestionView(currentQuestion);
+        }
+
+        function startMixedModeSession() {
+            currentActivity = 'mixed';
+            session.mode = 'mixed';
+
+            const pool = allQuestions; // whole set
+            const shuffled = [...pool].sort(() => Math.random() - 0.5);
+            const QUESTIONS_PER_SESSION = Math.min(15, shuffled.length);
+
+            session = {
+                questions: shuffled.slice(0, QUESTIONS_PER_SESSION),
+                currentIndex: 0,
+                correctThisSession: 0,
+                totalThisSession: QUESTIONS_PER_SESSION,
+                streak: 0,
+                maxStreak: 0,
+                mode: 'mixed'
+            };
+
+            currentQuestion = session.questions[0];
+            renderQuestionView(currentQuestion);
+        }
+
+        function goToNextQuestion() {
+            session.currentIndex++;
+
+            if (session.currentIndex >= session.totalThisSession) {
+                gameData.sessionsCompleted += 1;
+                if (gameData.score > gameData.highScore) {
+                    gameData.highScore = gameData.score;
+                }
+                saveGameData();
+                renderSessionSummary();
+                return;
+            }
+
+            currentQuestion = session.questions[session.currentIndex];
+            renderQuestionView(currentQuestion);
+        }
+
+        // --- ANSWER CHECKING ---
+
+        function checkAnswer(userAnswer) {
+            if (hasAnsweredCurrent) return;
+            hasAnsweredCurrent = true;
+
+            let isCorrect = false;
+            let feedbackMessage = '';
+
+            const q = currentQuestion;
+
+            switch (q.type) {
+                case 'mcq':
+                case 'tf':
+                    isCorrect = (userAnswer === q.answer);
+                    feedbackMessage = isCorrect
+                        ? 'Correct! Well done.'
+                        : `Incorrect. The correct answer was: ${q.answer}.`;
+                    break;
+                case 'short': {
+                    const input = (userAnswer || '').toLowerCase().trim();
+                    isCorrect = q.keywords.some(keyword => input.includes(keyword.toLowerCase()));
+                    feedbackMessage = isCorrect
+                        ? 'Excellent! You used a key piece of terminology.'
+                        : `Not quite. Try to use one of these keywords next time: ${q.keywords.join(', ')}.`;
+                    break;
+                }
+                case 'seq':
+                    isCorrect = Array.isArray(userAnswer) &&
+                                userAnswer.join(',') === q.answer.join(',');
+                    feedbackMessage = isCorrect
+                        ? 'Perfect sequence!'
+                        : 'Incorrect sequence. Check the order of the landforms.';
+                    break;
+            }
+
+            renderFeedbackView(isCorrect, feedbackMessage);
+        }
+
+        function awardPointsAndProgress(isCorrect) {
+            gameData.totalAnswered += 1;
+
+            if (isCorrect) {
+                gameData.score += 10;
+                session.correctThisSession++;
+                session.streak++;
+                if (session.streak > session.maxStreak) {
+                    session.maxStreak = session.streak;
+                }
+
+                if (!gameData.answeredQuestions.includes(currentQuestion.id)) {
+                    gameData.answeredQuestions.push(currentQuestion.id);
+                }
+
+                const badgeKey = currentQuestion.topic;
+                if (badgeKey && gameData.badges[badgeKey] && !gameData.badges[badgeKey].earned) {
+                    gameData.badges[badgeKey].questions += 1;
+                    if (gameData.badges[badgeKey].questions >= gameData.badges[badgeKey].required) {
+                        gameData.badges[badgeKey].earned = true;
+                        gameData.score += 50; // badge bonus
+                    }
+                }
+            } else {
+                session.streak = 0;
+            }
+
+            saveGameData();
+        }
+
+        // --- UI RENDERING ---
+
+        function renderHomeView() {
+            const view = document.getElementById('game-view');
+            const rank = getRank(gameData.score);
+            const totalBadges = Object.keys(gameData.badges).length;
+            const badgesEarned = Object.values(gameData.badges).filter(b => b.earned).length;
+
+            view.innerHTML = `
+                <div class="space-y-6 view-fade-in">
+                    <div class="p-5 bg-yellow-50 rounded-lg border-l-4 border-yellow-500 shadow-md">
+                        <h2 class="text-2xl font-bold text-gray-700">${rank}</h2>
+                        <p class="text-sm text-gray-500">Your current rank based on total points.</p>
+                        <p class="text-4xl font-extrabold text-gray-900 mt-2">
+                            ${gameData.score}
+                            <span class="text-base font-normal">points</span>
+                        </p>
+                        <p class="text-xs text-gray-500 mt-2">
+                            Sessions completed: <span class="font-semibold">${gameData.sessionsCompleted}</span> •
+                            Best ever score: <span class="font-semibold">${gameData.highScore}</span>
+                        </p>
+                    </div>
+
+                    <!-- Badge Tracker -->
+                    <div class="bg-gray-50 p-4 rounded-lg shadow-inner">
+                        <h3 class="text-xl font-semibold mb-3 text-gray-700">Discovery Badges (${badgesEarned}/${totalBadges})</h3>
+                        <div class="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                            ${Object.entries(gameData.badges).map(([key, badge]) => {
+                                const nameMap = {
+                                    general:       'Geology Guru',
+                                    coastal_proc:  'Wave Warrior',
+                                    coastal_land:  'Coastal Protector',
+                                    coastal_mgmt:  'Management Strategist',
+                                    river_proc:    'River Runner',
+                                    river_land:    'Flood Fighter',
+                                };
+                                const icon = badge.earned ? '🏆' : '🔒';
+                                const statusClass = badge.earned ? 'badge-unlocked opacity-100' : 'badge-locked opacity-70';
+                                const tooltip = badge.earned
+                                    ? 'Unlocked!'
+                                    : `Answer ${Math.max(badge.required - badge.questions, 0)} more question(s) correctly.`;
+
+                                return `
+                                    <button type="button"
+                                        onclick="${badge.earned ? `startTopicSession('${key}')` : ''}"
+                                        class="text-center p-2 rounded-lg transition duration-300 transform hover:scale-105 focus:outline-none"
+                                        title="${tooltip}">
+                                        <span class="text-3xl ${statusClass}">${icon}</span>
+                                        <p class="text-xs font-medium mt-1 ${badge.earned ? 'text-emerald-700' : 'text-gray-400'}">
+                                            ${nameMap[key] || key.toUpperCase()}
+                                        </p>
+                                    </button>
+                                `;
+                            }).join('')}
+                        </div>
+                        <p class="mt-3 text-xs text-gray-500">
+                            Tip: Once a badge is unlocked, click it to jump straight into that topic.
+                        </p>
+                    </div>
+
+                    <!-- Activity Selector -->
+                    <div class="pt-4 border-t">
+                        <h3 class="text-xl font-semibold mb-3 text-gray-700">Start an Expedition</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                            <button onclick="startTopicSession('general')" class="btn-primary p-4 rounded-xl text-white font-bold text-lg flex items-center justify-center">
+                                ⛰️ General UK Landscapes
+                            </button>
+                            <button onclick="startTopicSession('coastal_proc')" class="btn-primary p-4 rounded-xl text-white font-bold text-lg flex items-center justify-center">
+                                🌊 Coastal Processes & Landforms
+                            </button>
+                            <button onclick="startTopicSession('river_proc')" class="btn-primary p-4 rounded-xl text-white font-bold text-lg flex items-center justify-center">
+                                🏞️ River Processes
+                            </button>
+                            <button onclick="startTopicSession('coastal_mgmt')" class="btn-primary p-4 rounded-xl text-white font-bold text-lg flex items-center justify-center">
+                                🏗️ Coastal Management (Holderness)
+                            </button>
+                        </div>
+
+                        <h4 class="text-lg font-semibold mb-2 text-gray-700">Challenge Modes</h4>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <button onclick="startTopicSession('river_land')" class="btn-secondary p-4 rounded-xl text-white font-bold text-lg flex items-center justify-center">
+                                🌐 River Landforms & Features
+                            </button>
+                            <button onclick="startMixedModeSession()" class="btn-secondary p-4 rounded-xl text-white font-bold text-lg flex items-center justify-center">
+                                🎲 Mixed Question Practice
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderQuestionView(q) {
+            const view = document.getElementById('game-view');
+            const questionNumber = session.currentIndex + 1;
+            const percent = Math.round((questionNumber / session.totalThisSession) * 100);
+
+            hasAnsweredCurrent = false;
+
+            let contentHTML = '';
+
+            const topicLabelMap = {
+                general: 'General UK Landscapes',
+                coastal_proc: 'Coastal Processes',
+                coastal_land: 'Coastal Landforms',
+                coastal_mgmt: 'Coastal Management (Holderness)',
+                river_proc: 'River Processes',
+                river_land: 'River Landforms',
+                river_flood: 'Flooding & Management',
+            };
+
+            const topicLabel = session.mode === 'mixed'
+                ? (topicLabelMap[q.topic] || 'Mixed')
+                : (topicLabelMap[currentActivity] || 'Topic');
+
+            const difficultyLabel = q.difficulty || 'mixed';
+
+            switch (q.type) {
+                case 'mcq':
+                case 'tf':
+                    contentHTML = `
+                        ${q.options.map(option => `
+                            <button onclick="checkAnswer('${option.replace(/'/g, "\\'")}')" 
+                                class="option-item bg-gray-100 p-4 rounded-lg text-left font-medium text-gray-700 border-2 border-gray-200 hover:border-emerald-500 transition duration-150 w-full">
+                                ${option}
+                            </button>
+                        `).join('')}
+                    `;
+                    break;
+                case 'short':
+                    contentHTML = `
+                        <p class="text-sm text-gray-500 mb-2">
+                            Type your answer below. Aim to include at least one key term.
+                        </p>
+                        <input type="text" id="short-answer-input" placeholder="Your answer..." class="w-full p-3 mb-4">
+                        <button onclick="checkAnswer(document.getElementById('short-answer-input').value)" 
+                            class="btn-secondary w-full p-3 rounded-lg text-white font-bold">
+                            Submit Answer
+                        </button>
+                    `;
+                    break;
+                case 'seq':
+                    selectedSequence = [];
+                    contentHTML = `
+                        <p class="text-sm text-red-500 mb-4 font-semibold">
+                            For sequencing questions, click the options in the correct order before submitting.
+                        </p>
+                        <div id="sequence-area" class="space-y-3 p-4 bg-yellow-50 rounded-lg">
+                            <p class="font-bold text-gray-700">Current Sequence:</p>
+                            <ul id="selected-sequence" class="list-disc pl-5 text-sm text-gray-600"></ul>
+                            <div id="sequence-options" class="grid grid-cols-2 gap-3 pt-3 border-t">
+                                ${q.sequence.map(item => `
+                                    <button data-value="${item.replace(/'/g, "\\'")}" 
+                                        onclick="selectSequenceItem('${item.replace(/'/g, "\\'")}')" 
+                                        class="sequence-option bg-indigo-100 p-3 rounded-lg text-center font-medium text-indigo-800 transition duration-150 hover:bg-indigo-200">
+                                        ${item}
+                                    </button>
+                                `).join('')}
+                            </div>
+                        </div>
+                        <button onclick="submitSequence()" class="btn-secondary w-full p-3 rounded-lg text-white font-bold mt-4">
+                            Submit Sequence
+                        </button>
+                    `;
+                    break;
+            }
+
+            view.innerHTML = `
+                <div class="space-y-4 view-fade-in">
+                    <div class="mb-2">
+                        <div class="flex items-center justify-between text-xs text-gray-500 mb-1">
+                            <div class="flex items-center gap-2">
+                                <span class="px-2 py-1 bg-emerald-100 rounded-full">${topicLabel}</span>
+                                <span class="px-2 py-1 bg-indigo-100 rounded-full">Difficulty: ${difficultyLabel}</span>
+                            </div>
+                            <span>Question ${questionNumber} of ${session.totalThisSession}</span>
+                        </div>
+                        <div class="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                            <div class="bg-emerald-500 h-2" style="width: ${percent}%"></div>
+                        </div>
+                    </div>
+
+                    <h2 class="text-lg sm:text-xl font-bold text-gray-800 p-3 bg-gray-100 rounded-lg">
+                        ${q.q}
+                    </h2>
+
+                    <div class="space-y-3 mt-2">
+                        ${contentHTML}
+                    </div>
+
+                    <p class="text-xs text-gray-400 mt-4">
+                        Current session streak: <span class="font-semibold">${session.streak}</span> correct in a row.
+                    </p>
+                </div>
+            `;
+
+            if (q.type === 'seq') {
+                updateSequenceUI();
+            }
+        }
+
+        // Sequencing helpers
+        let selectedSequence = [];
+
+        window.selectSequenceItem = function(value) {
+            if (selectedSequence.length < currentQuestion.sequence.length && !selectedSequence.includes(value)) {
+                selectedSequence.push(value);
+                updateSequenceUI();
+            }
+        };
+
+        function updateSequenceUI() {
+            const list = document.getElementById('selected-sequence');
+            if (list) {
+                list.innerHTML = selectedSequence.map((item, index) => `<li>${index + 1}. ${item}</li>`).join('');
+
+                document.querySelectorAll('.sequence-option').forEach(btn => {
+                    const val = btn.getAttribute('data-value');
+                    if (selectedSequence.includes(val)) {
+                        btn.disabled = true;
+                        btn.classList.add('opacity-50', 'cursor-not-allowed');
+                        btn.classList.remove('hover:bg-indigo-200');
+                    } else {
+                        btn.disabled = false;
+                        btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                        btn.classList.add('hover:bg-indigo-200');
+                    }
+                });
+            }
+        }
+
+        window.submitSequence = function() {
+            if (selectedSequence.length !== currentQuestion.sequence.length) {
+                const messageBox = document.getElementById('sequence-area');
+                if (messageBox) {
+                    messageBox.insertAdjacentHTML('afterbegin', `
+                        <p id="seq-error" class="text-red-700 font-bold mb-2">
+                            Please select all steps in the sequence before submitting.
+                        </p>
+                    `);
+                    setTimeout(() => {
+                        const errorMsg = document.getElementById('seq-error');
+                        if (errorMsg) errorMsg.remove();
+                    }, 3000);
+                }
+                return;
+            }
+            checkAnswer(selectedSequence);
+            selectedSequence = [];
+        };
+
+        function renderFeedbackView(isCorrect, message) {
+            awardPointsAndProgress(isCorrect);
+
+            const view = document.getElementById('game-view');
+            const resultIcon = isCorrect ? '✅' : '❌';
+            const resultColor = isCorrect ? 'bg-emerald-100 border-emerald-500' : 'bg-red-100 border-red-500';
+
+            const explanation = currentQuestion.explanation
+                ? `
+                    <div class="mt-4 p-3 bg-white/70 rounded-lg text-sm text-gray-700 text-left">
+                        <p class="font-semibold mb-1">Revision tip:</p>
+                        <p>${currentQuestion.explanation}</p>
+                    </div>
+                  `
+                : '';
+
+            view.innerHTML = `
+                <div class="text-center p-6 rounded-xl ${resultColor} border-l-4 space-y-4 view-fade-in">
+                    <p class="text-6xl">${resultIcon}</p>
+                    <h2 class="text-3xl font-bold text-gray-800">
+                        ${isCorrect ? 'Correct!' : 'Not quite'}
+                    </h2>
+                    <p class="text-lg text-gray-700">${message}</p>
+
+                    ${explanation}
+
+                    <div class="mt-6 pt-4 border-t border-gray-300">
+                        <p class="text-sm font-semibold text-gray-600">
+                            Total Score:
+                            <span class="text-xl text-red-600">${gameData.score}</span>
+                        </p>
+                        <p class="text-sm font-semibold text-gray-600">
+                            Questions Answered:
+                            <span class="text-xl text-red-600">${gameData.totalAnswered}</span>
+                        </p>
+                        <p class="text-sm font-semibold text-gray-600">
+                            Current Session Streak:
+                            <span class="text-xl text-emerald-700">${session.streak}</span>
+                        </p>
+                    </div>
+
+                    <div class="flex flex-col sm:flex-row gap-3 mt-6 justify-center">
+                        <button onclick="goToNextQuestion()" class="btn-secondary px-6 py-3 rounded-lg text-white font-bold">
+                            Next Question
+                        </button>
+                        <button onclick="renderHomeView()" class="bg-gray-300 hover:bg-gray-400 px-6 py-3 rounded-lg text-gray-800 font-bold transition">
+                            Back to Dashboard
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderSessionSummary() {
+            const view = document.getElementById('game-view');
+            const percent = session.totalThisSession > 0
+                ? Math.round((session.correctThisSession / session.totalThisSession) * 100)
+                : 0;
+
+            view.innerHTML = `
+                <div class="text-center p-6 rounded-xl bg-indigo-50 border-indigo-500 border-l-4 space-y-4 view-fade-in">
+                    <p class="text-6xl">📊</p>
+                    <h2 class="text-3xl font-bold text-gray-800">Session Complete!</h2>
+                    <p class="text-lg text-gray-700 mb-1">
+                        You scored <span class="font-bold">${session.correctThisSession}</span> out of
+                        <span class="font-bold">${session.totalThisSession}</span> (${percent}%)
+                    </p>
+                    <p class="text-sm text-gray-600 mb-2">
+                        Best streak this session:
+                        <span class="font-semibold">${session.maxStreak}</span> correct in a row.
+                    </p>
+
+                    <div class="mt-4 p-4 bg-white rounded-lg text-left text-sm text-gray-700">
+                        <p class="font-semibold mb-1">Next steps:</p>
+                        <ul class="list-disc pl-5 space-y-1">
+                            <li>If you scored below 70%, replay this topic to secure the basics.</li>
+                            <li>If you scored 70–85%, try a different topic or Mixed Mode.</li>
+                            <li>If you scored above 85%, challenge yourself with another session straight away.</li>
+                        </ul>
+                    </div>
+
+                    <div class="flex flex-col sm:flex-row gap-3 mt-6 justify-center">
+                        <button onclick="${session.mode === 'mixed'
+                            ? 'startMixedModeSession()'
+                            : `startTopicSession('${currentActivity}')`}"
+                            class="btn-primary px-6 py-3 rounded-lg text-white font-bold">
+                            Replay This Mode
+                        </button>
+                        <button onclick="renderHomeView()" class="bg-gray-300 hover:bg-gray-400 px-6 py-3 rounded-lg text-gray-800 font-bold transition">
+                            Back to Dashboard
+                        </button>
+                        <button onclick="resetGameDataConfirmation()" class="bg-red-500 hover:bg-red-600 px-6 py-3 rounded-lg text-white font-bold transition">
+                            Reset All Progress
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        window.resetGameDataConfirmation = function() {
+            const view = document.getElementById('game-view');
+            view.innerHTML = `
+                <div class="text-center p-6 rounded-xl bg-red-100 border-red-500 border-l-4 space-y-4 view-fade-in">
+                    <p class="text-3xl font-bold text-red-800">Confirm Reset</p>
+                    <p class="text-lg text-red-700">
+                        Are you sure you want to reset all scores, badges and progress?
+                        This cannot be undone.
+                    </p>
+                    <div class="flex gap-3 mt-6 justify-center">
+                        <button onclick="resetGameData()" class="bg-red-600 hover:bg-red-700 px-6 py-3 rounded-lg text-white font-bold transition">
+                            Yes, reset everything
+                        </button>
+                        <button onclick="renderHomeView()" class="bg-gray-300 hover:bg-gray-400 px-6 py-3 rounded-lg text-gray-800 font-bold transition">
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            `;
+        };
+
+        window.resetGameData = function() {
+            gameData = structuredClone(initialGameData);
+            saveGameData();
+            renderHomeView();
+        };
+
+        // Expose core functions globally for inline handlers
+        window.startTopicSession = startTopicSession;
+        window.startMixedModeSession = startMixedModeSession;
+        window.goToNextQuestion = goToNextQuestion;
+        window.checkAnswer = checkAnswer;
+        window.renderHomeView = renderHomeView;
+
+        // --- START APPLICATION ---
+        initializeFirebase();
+    </script>
+</body>
+</html>
